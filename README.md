@@ -21,14 +21,12 @@ You can generate a PDF or an HTML copy of this guide using
 ## Table of Contents
 
 * [RSpec](#rspec)
-* [Views](#views)
-* [Controllers](#controllers)
-* [Models](#models)
+* [Mocking and Stubbing](#mocking-and-stubbing)
+* [Plain Old Ruby Models](#plain-old-ruby-models)
+* [ActiveRecord Models](#activerecord-models)
 * [Mailers](#mailers)
 * [Rake Tasks](#rake-tasks)
 * [Miscellaneous](#miscellaneous)
-* [Contributing](#contributing)
-* [Spread the Word](#spread-the-word)
 
 ## RSpec
 
@@ -144,14 +142,15 @@ You can generate a PDF or an HTML copy of this guide using
   end
   ```
 
-* Use Factory Girl to create test objects.
+### Mocking and Stubbing
 
-* Try to avoid mocking and stubbing, favoring test parameters or
+* Exclusively use mocking and stubbing in unit specs with POROs.
+* Try to avoid mocking and stubbing in integration specs, favoring test parameters or
   attributes instead. When resorting to mocking and stubbing, only
   mock against a small, stable, obvious (or documented) API, so stubs
   are likely to represent reality after future refactoring.
 
-* Valid reasons to use stubs/mocks:
+* Other Valid reasons to use stubs/mocks:
   * Performance: To prevent running a slow, unrelated task.
   * Determinism: To ensure the test gives the same result each
     time. e.g. Time.now, Kernel#rand, external web services.
@@ -160,14 +159,40 @@ You can generate a PDF or an HTML copy of this guide using
   * Legacy: Stubbing old code that requires complex setup. (New code
     should not require complex setup!)
   * BDD: To remove the dependence on code that does not yet exist.
-  * Controller / Functional tests:
 
-    > In a controller spec, we don't care about how our data objects are created or what data they contain; we are writing expectations for the functional behavior of that controller, and that controller only. Mocks and stubs are used to decouple from the model layer and stay focused on the task of specing the controller.
-    >
-    > joahking, RailsForum: http://railsforum.com/viewtopic.php?pid=68311#p68311
+* Always use [Timecop](https://github.com/travisjeffery/timecop) instead of stubbing anything on Time or Date.
 
-* Use `let` blocks instead of `before(:each)` blocks to create data for
-  the spec examples. `let` blocks get lazily evaluated.
+    ```Ruby
+    # bad
+    it "offsets the time 2 days into the future" do
+      current_time = Time.now
+      Time.stub(:now).and_return(current_time)
+      subject.get_offset_time.should be_the_same_time_as (current_time + 2.days)
+    end
+
+    # good
+    it "offsets the time 2 days into the future" do
+      Timecop.freeze(Time.now) do
+        subject.get_offset_time.should be_the_same_time_as 2.days.from_now
+      end
+    end
+    ```
+
+    NOTE: `#be_the_same_time_as` is a RSpec matcher we added to the platform, it
+    is not normally available to RSpec.
+
+### Plain Old Ruby Models
+
+* Utilize mocking and stubbing to drive the design of your object's methods.
+* Listen to the pain created during mocking and stubbing collaborators and dependencies to drive decoupling.
+
+### ActiveRecord Models
+
+* Do not mock the models in their own specs.
+* Use Factory Girl to make real objects in these integration specs.
+* It is acceptable to mock other models or child objects.
+* Create the model for all examples in the spec to avoid duplication.
+* Avoid unnecessary database calls.
 
     ```Ruby
     # use this:
@@ -175,158 +200,6 @@ You can generate a PDF or an HTML copy of this guide using
 
     # ... instead of this:
     before(:each) { @article = FactoryGirl.create(:article) }
-    ```
-
-### Views
-
-* The directory structure of the view specs `spec/views` matches the
-  one in `app/views`. For example the specs for the views in
-  `app/views/users` are placed in `spec/views/users`.
-* The naming convention for the view specs is adding `_spec.rb` to the
-  view name, for example the view `_form.html.haml` has a
-  corresponding spec `_form.html.haml_spec.rb`.
-* `spec_helper.rb` need to be required in each view spec file.
-* The outer `describe` block uses the path to the view without the
-  `app/views` part. This is used by the `render` method when it is
-  called without arguments.
-
-    ```Ruby
-    # spec/views/articles/new.html.haml_spec.rb
-    require 'spec_helper'
-
-    describe 'articles/new.html.haml' do
-      # ...
-    end
-    ```
-
-* The method `assign` supplies the instance variables which the view
-  uses and are supplied by the controller.
-
-    ```Ruby
-    # spec/views/articles/edit.html.haml_spec.rb
-    describe 'articles/edit.html.haml' do
-    it 'renders the form for a new article creation' do
-      assign(
-        :article,
-        mock_model(Article).as_new_record.as_null_object
-      )
-      render
-      rendered.should have_selector('form',
-        method: 'post',
-        action: articles_path
-      ) do |form|
-        form.should have_selector('input', type: 'submit')
-      end
-    end
-    ```
-
-* The helpers specs are separated from the view specs in the `spec/helpers` directory.
-
-### Controllers
-
-* Mock the models and stub their methods. Testing the controller should not depend on the model creation.
-* Test only the behaviour the controller should be responsible about:
-  * Execution of particular methods
-  * Data returned from the action - assigns, etc.
-  * Result from the action - template render, redirect, etc.
-
-        ```Ruby
-        # Example of a commonly used controller spec
-        # spec/controllers/articles_controller_spec.rb
-        # We are interested only in the actions the controller should perform
-        # So we are mocking the model creation and stubbing its methods
-        # And we concentrate only on the things the controller should do
-
-        describe ArticlesController do
-          # The model will be used in the specs for all methods of the controller
-          let(:article) { mock_model(Article) }
-
-          describe 'POST create' do
-            before { Article.stub(:new).and_return(article) }
-
-            it 'creates a new article with the given attributes' do
-              Article.should_receive(:new).with(title: 'The New Article Title').and_return(article)
-              post :create, message: { title: 'The New Article Title' }
-            end
-
-            it 'saves the article' do
-              article.should_receive(:save)
-              post :create
-            end
-
-            it 'redirects to the Articles index' do
-              article.stub(:save)
-              post :create
-              response.should redirect_to(action: 'index')
-            end
-          end
-        end
-        ```
-
-* Use context when the controller action has different behaviour depending on the received params.
-
-    ```Ruby
-    # A classic example for use of contexts in a controller spec is creation or update when the object saves successfully or not.
-
-    describe ArticlesController do
-      let(:article) { mock_model(Article) }
-
-      describe 'POST create' do
-        before { Article.stub(:new).and_return(article) }
-
-        it 'creates a new article with the given attributes' do
-          Article.should_receive(:new).with(title: 'The New Article Title').and_return(article)
-          post :create, article: { title: 'The New Article Title' }
-        end
-
-        it 'saves the article' do
-          article.should_receive(:save)
-          post :create
-        end
-
-        context 'when the article saves successfully' do
-          before { article.stub(:save).and_return(true) }
-
-          it 'sets a flash[:notice] message' do
-            post :create
-            flash[:notice].should eq('The article was saved successfully.')
-          end
-
-          it 'redirects to the Articles index' do
-            post :create
-            response.should redirect_to(action: 'index')
-          end
-        end
-
-        context 'when the article fails to save' do
-          before { article.stub(:save).and_return(false) }
-
-          it 'assigns @article' do
-            post :create
-            assigns[:article].should be_eql(article)
-          end
-
-          it 're-renders the "new" template' do
-            post :create
-            response.should render_template('new')
-          end
-        end
-      end
-    end
-    ```
-
-### Models
-
-* Do not mock the models in their own specs.
-* Use Factory Girl or Mechanize to make real objects.
-* It is acceptable to mock other models or child objects.
-* Create the model for all examples in the spec to avoid duplication.
-* Avoid unnecessary database calls.
-
-    ```Ruby
-    describe Article
-      let(:article) { FactoryGirl.build(:article) }
-    end
     ```
 
 * Add an example ensuring that the fabricated model is valid.
@@ -420,16 +293,3 @@ many but not all of the shared expectations are required.
 * Be careful not to focus on being "DRY" by moving repeated expectations
 into a shared environment too early, as this can lead to brittle tests
 that rely too much on one other.
-
-# Contributing
-
-Feel free to open tickets or send pull requests with improvements. Thanks in
-advance for your help!
-
-# Spread the Word
-
-A community-driven style guide is of little use to a community that
-doesn't know about its existence. Tweet about the guide, share it with
-your friends and colleagues. Every comment, suggestion or opinion we
-get makes the guide just a little bit better. And we want to have the
-best possible guide, don't we?
